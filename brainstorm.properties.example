@@ -1,0 +1,9 @@
+# Example properties file for brainstorm
+host = localhost
+port = 10617
+user = user
+password = password
+addr = 47TZrzoftLodX1gjbsMEDZPufLjy6uf7jD
+interval = 300
+transfer = 100
+minimum=315000
