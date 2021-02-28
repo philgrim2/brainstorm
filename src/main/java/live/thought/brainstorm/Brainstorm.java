@@ -2,11 +2,12 @@ package live.thought.brainstorm;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Properties;
+import java.util.Random;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
@@ -15,49 +16,52 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
-import live.thought.thought4j.ThoughtClientInterface.BasicTxOutput;
-import live.thought.thought4j.ThoughtClientInterface.MasternodeOutput;
-import live.thought.thought4j.ThoughtClientInterface.TxInput;
-import live.thought.thought4j.ThoughtClientInterface.TxOutput;
-import live.thought.thought4j.ThoughtClientInterface.Unspent;
 import live.thought.thought4j.ThoughtRPCClient;
 
 public class Brainstorm
 {
   /** RELEASE VERSION */
-  public static final String               VERSION          = "v0.1";
+  public static final String               VERSION               = "v0.1";
   /** Options for the command line parser. */
-  protected static final Options           options          = new Options();
+  protected static final Options           options               = new Options();
   /** The Commons CLI command line parser. */
-  protected static final CommandLineParser gnuParser        = new GnuParser();
+  protected static final CommandLineParser gnuParser             = new GnuParser();
   /** Default values for connection. */
-  private static final String              DEFAULT_HOST     = "localhost";
-  private static final String              DEFAULT_PORT     = "10617";
-  private static final String              DEFAULT_USER     = "user";
-  private static final String              DEFAULT_PASS     = "password";
-  private static final String              DEFAULT_INTERVAL = Integer.toString(60 * 60 * 2);     // 2 hours
-  private static final String              DEFAULT_TRANSFER = Integer.toString(100);
-  private static final String              DEFAULT_MINB     = Double.toString(315000.0); // Stay above masternode stake by default
+  private static final String              DEFAULT_HOST          = "localhost";
+  private static final String              DEFAULT_PORT          = "10617";
+  private static final String              DEFAULT_USER          = "user";
+  private static final String              DEFAULT_PASS          = "password";
+  private static final String              DEFAULT_INTERVAL      = Integer.toString(60 * 60 * 2);         // 2 hours
+  private static final String              DEFAULT_TRANSFER_MEAN = Integer.toString(100);
+  private static final String              DEFAULT_TRANSFER_SD   = Double.toString(6.0);
+  private static final String              DEFAULT_MINB          = Double.toString(315000.0);             // Stay above
+                                                                                                          // masternode
+                                                                                                          // stake by
+                                                                                                          // default
 
-  private static final String              HOST_PROPERTY    = "host";
-  private static final String              PORT_PROPERTY    = "port";
-  private static final String              USER_PROPERTY    = "user";
-  private static final String              PASS_PROPERTY    = "password";
-  private static final String              ADDR_PROPERTY    = "addr";
-  private static final String              INTR_PROPERTY    = "interval";
-  private static final String              TXFR_PROPERTY    = "transfer";
-  private static final String              MINB_PROPERTY    = "minimum";
-  private static final String              HELP_OPTION      = "help";
-  private static final String              CONFIG_OPTION    = "config"; 
+  private static final String              HOST_PROPERTY         = "host";
+  private static final String              PORT_PROPERTY         = "port";
+  private static final String              USER_PROPERTY         = "user";
+  private static final String              PASS_PROPERTY         = "password";
+  private static final String              ADDR_PROPERTY         = "addr";
+  private static final String              INTR_PROPERTY         = "interval";
+  private static final String              TXFR_MEAN_PROPERTY    = "transferMean";
+  private static final String              TXFR_SD_PROPERTY      = "transferSD";
+  private static final String              MINB_PROPERTY         = "minimum";
+  private static final String              HELP_OPTION           = "help";
+  private static final String              CONFIG_OPTION         = "config";
+
+  private static Random                    random                = new Random(System.currentTimeMillis());
 
   /** Connection for Thought daemon */
   private ThoughtRPCClient                 client;
 
-  String                                   targetAddress;
-  int                                      interval;
-  int                                      transfer;
-  double                                   minBalance;
-  
+  private String                           targetAddress;
+  private int                              interval;
+  private int                              transferMean;
+  private double                           transferSD;
+  private double                           minBalance;
+
   /** Set up command line options. */
   static
   {
@@ -67,8 +71,10 @@ public class Brainstorm
     options.addOption("p", PASS_PROPERTY, true, "Thought server RPC password");
     options.addOption("a", ADDR_PROPERTY, true, "Thought wallet address to send coins to");
     options.addOption("i", INTR_PROPERTY, true, "Polling interval in seconds (default: 2 hours)");
-    options.addOption("t", TXFR_PROPERTY, true, "Threshhold amount to transfer per interval (default: 100)");
-    options.addOption("m", MINB_PROPERTY, true, "Minimum balance to keep in the source account. (Defaults to 315,000.0)");
+    options.addOption("t", TXFR_MEAN_PROPERTY, true, "Mean amount to transfer per interval (default: 100)");
+    options.addOption("s", TXFR_SD_PROPERTY, true, "Standard deviation for transfer distribution (default: 6.0)");
+    options.addOption("m", MINB_PROPERTY, true,
+        "Minimum balance to keep in the source account. (Defaults to 315,000.0)");
     options.addOption("H", HELP_OPTION, true, "Displays usage information");
     options.addOption("f", CONFIG_OPTION, true,
         "Configuration file to load options from.  Command line options override config file.");
@@ -82,7 +88,8 @@ public class Brainstorm
     String pass = props.getProperty(PASS_PROPERTY, DEFAULT_PASS);
     targetAddress = props.getProperty(ADDR_PROPERTY);
     interval = Integer.parseInt(props.getProperty(INTR_PROPERTY, DEFAULT_INTERVAL));
-    transfer = Integer.parseInt(props.getProperty(TXFR_PROPERTY, DEFAULT_TRANSFER));
+    transferMean = Integer.parseInt(props.getProperty(TXFR_MEAN_PROPERTY, DEFAULT_TRANSFER_MEAN));
+    transferSD = Double.parseDouble(props.getProperty(TXFR_SD_PROPERTY, DEFAULT_TRANSFER_SD));
     minBalance = Double.parseDouble(props.getProperty(MINB_PROPERTY, DEFAULT_MINB));
 
     URL url = null;
@@ -97,36 +104,9 @@ public class Brainstorm
     }
   }
 
-  private boolean checkCanSpend(Unspent unspent, List<MasternodeOutput> outputs)
-  {
-    boolean retval = true;
-    
-    for (MasternodeOutput o: outputs)
-    {
-      if (o.txid() == unspent.txid())
-      {
-        retval = false;
-        break;
-      }
-    }
-    
-    return retval;
-  }
-  
   public void run()
   {
     boolean moreElectricity = true;
-    List<MasternodeOutput> verboten = null;
-    try
-    {
-      Console.output("Checking for reserved masternode transaction.");
-      verboten = client.masternodeOutputs();
-    }
-    catch (Exception e)
-    {
-      Console.output("Not a masternode - no reserved transaction.");
-      verboten = new ArrayList<MasternodeOutput>();
-    }
 
     while (moreElectricity)
     {
@@ -134,32 +114,16 @@ public class Brainstorm
       Console.output("Current balance: " + balance);
       if (balance > minBalance)
       {
-        Console.output("Looking for inputs.");
-        List<Unspent> unspent = client.listUnspent(6);
-        if (null != unspent && unspent.size() > 0)
+        double transfer = BigDecimal.valueOf(random.nextGaussian() * transferSD + transferMean).setScale(8, RoundingMode.HALF_UP)
+            .doubleValue();
+        try
         {
-          List<TxInput> inputs = new ArrayList<TxInput>();
-          double running = 0.0;
-          for (Unspent tx : unspent)
-          {
-            if (checkCanSpend(tx, verboten))
-            {
-              inputs.add(tx);
-              running += tx.amount();
-            }
-            if (running >= transfer)
-            {
-              Console.output("Found enough inputs.");
-              BasicTxOutput output = new BasicTxOutput(targetAddress, running);
-              List<TxOutput> outputs = new ArrayList<TxOutput>();
-              outputs.add(output);
-              String rawtx = client.createRawTransaction(inputs, outputs);
-              client.sendRawTransaction(rawtx);
-              Console.output("@|green Transaction sent.|@");
-              break;
-            }
-          }
-          
+          client.sendToAddress(targetAddress, transfer, "", "", true, false, false);
+          Console.output(String.format("@|green Sent %f THT to address %s. |@", transfer, targetAddress));
+        }
+        catch (Exception e)
+        {
+          Console.output(String.format("@|red Exception sending transaction: %s |@", e.toString()));
         }
       }
       else
@@ -175,6 +139,7 @@ public class Brainstorm
         Console.output("Who has disturbed my slumber?");
       }
     }
+
   }
 
   protected static void usage()
@@ -238,9 +203,13 @@ public class Brainstorm
       {
         props.setProperty(INTR_PROPERTY, commandLine.getOptionValue(INTR_PROPERTY));
       }
-      if (commandLine.hasOption(TXFR_PROPERTY))
+      if (commandLine.hasOption(TXFR_MEAN_PROPERTY))
       {
-        props.setProperty(TXFR_PROPERTY, commandLine.getOptionValue(TXFR_PROPERTY));
+        props.setProperty(TXFR_MEAN_PROPERTY, commandLine.getOptionValue(TXFR_MEAN_PROPERTY));
+      }
+      if (commandLine.hasOption(TXFR_SD_PROPERTY))
+      {
+        props.setProperty(TXFR_SD_PROPERTY, commandLine.getOptionValue(TXFR_SD_PROPERTY));
       }
       if (commandLine.hasOption(MINB_PROPERTY))
       {
