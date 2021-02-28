@@ -5,5 +5,6 @@ user = user
 password = password
 addr = 47TZrzoftLodX1gjbsMEDZPufLjy6uf7jD
 interval = 300
-transfer = 100
+transferMean = 100
+transferSD = 6
 minimum=315000
