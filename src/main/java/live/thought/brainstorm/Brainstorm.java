@@ -114,8 +114,8 @@ public class Brainstorm
       Console.output("Current balance: " + balance);
       if (balance > minBalance)
       {
-        double transfer = BigDecimal.valueOf(random.nextGaussian() * transferSD + transferMean).setScale(8, RoundingMode.HALF_UP)
-            .doubleValue();
+        double transfer = Math.abs(BigDecimal.valueOf(random.nextGaussian() * transferSD + transferMean).setScale(8, RoundingMode.HALF_UP)
+            .doubleValue());
         try
         {
           client.sendToAddress(targetAddress, transfer, "", "", true, false, false);
